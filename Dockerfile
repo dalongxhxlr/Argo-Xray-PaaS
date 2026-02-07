@@ -1,9 +1,11 @@
 FROM alpine:latest
 
-# 在构建阶段就下好所有程序，避免启动缓慢
-RUN apk add --no-cache wget curl unzip && \
+# 安装必要环境，包括 bash 和证书支持
+RUN apk add --no-cache wget curl unzip bash ca-certificates && \
+    # 下载 cloudflared
     wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && \
     chmod +x /usr/local/bin/cloudflared && \
+    # 下载 xray
     wget -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && \
     unzip /tmp/xray.zip -d /usr/local/bin/ && \
     chmod +x /usr/local/bin/xray && \
