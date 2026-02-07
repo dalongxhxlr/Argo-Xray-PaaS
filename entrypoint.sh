@@ -199,13 +199,13 @@ cat > config.json << EOF
 EOF
 
 # 下载并运行 Argo
-# wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x cloudflared-linux-amd64
 ./cloudflared-linux-amd64 tunnel --url http://localhost:${PORT} --no-autoupdate > argo.log 2>&1 &
 
 # 下载 Xray，并伪装 xray 执行文件
 RANDOM_NAME=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 6)
-# wget -O temp.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+wget -O temp.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
 unzip temp.zip xray geosite.dat geoip.dat
 mv xray ${RANDOM_NAME}
 rm -f temp.zip
