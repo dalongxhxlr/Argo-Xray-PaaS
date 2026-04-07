@@ -1,0 +1,80 @@
+name: koyeb-auto-start-stop
+
+on:
+  schedule:
+    # 🌅 09:00 开（UTC 01:00）
+    - cron: '0 1 * * *'
+    # 🌙 23:00 关（UTC 15:00）
+    - cron: '0 15 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Decide action
+        id: decide
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "01" ]; then
+            echo "action=start" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" = "15" ]; then
+            echo "action=stop" >> $GITHUB_OUTPUT
+          else
+            echo "action=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Start service (with retry)
+        if: steps.decide.outputs.action == 'start'
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+        run: |
+          echo "Starting service..."
+          for i in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $KOYEB_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"scaling":{"min":1,"max":1}}' \
+              "https://app.koyeb.com/v1/services/$KOYEB_SERVICE")
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Service started successfully."
+              exit 0
+            fi
+
+            echo "Attempt $i failed (HTTP $STATUS), retrying in 5s..."
+            sleep 5
+          done
+
+          echo "Failed to start service after 3 attempts."
+          exit 1
+
+      - name: Stop service (with retry)
+        if: steps.decide.outputs.action == 'stop'
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+        run: |
+          echo "Stopping service..."
+          for i in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $KOYEB_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"scaling":{"min":0,"max":0}}' \
+              "https://app.koyeb.com/v1/services/$KOYEB_SERVICE")
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Service stopped successfully."
+              exit 0
+            fi
+
+            echo "Attempt $i failed (HTTP $STATUS), retrying in 5s..."
+            sleep 5
+          done
+
+          echo "Failed to stop service after 3 attempts."
+          exit 1
