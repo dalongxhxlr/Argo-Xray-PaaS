@@ -16,13 +16,13 @@ jobs:
         uses: actions/checkout@v4
 
       # 必须放在最前面，永远执行
-      - name: Install Koyeb CLI
-        shell: bash
+      - name: Install Koyeb CLI (GitHub mirror)
         run: |
-          curl -fsSL https://cli.koyeb.com/install.sh | sh
-          echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
-          export PATH="$HOME/.koyeb/bin:$PATH"
-          which koyeb || true
+          curl -L https://github.com/koyeb/koyeb-cli/releases/latest/download/koyeb-linux-amd64 -o koyeb
+          chmod +x koyeb
+          sudo mv koyeb /usr/local/bin/koyeb
+          which koyeb
+          koyeb --version
 
       - name: Decide action
         id: decide
