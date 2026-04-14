@@ -2,8 +2,8 @@ name: koyeb-worker-auto
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 09:00 启动（UTC 01:00）
-    - cron: '0 15 * * *'  # 23:00 停止（UTC 15:00）
+    - cron: '0 1 * * *'   # 09:00 CST 启动（UTC 01:00）
+    - cron: '0 15 * * *'  # 23:00 CST 停止（UTC 15:00）
   workflow_dispatch:
 
 jobs:
@@ -81,12 +81,19 @@ jobs:
             -H "Authorization: Bearer $KOYEB_TOKEN" \
             "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
 
-      - name: Add usage hour
+      - name: Add usage hours
         if: steps.decide.outputs.action == 'stop'
         run: |
           FILE="platform_limits.json"
           USED=$(sed -n 's/.*"usage_hours": \([0-9]*\).*/\1/p' $FILE)
-          NEW=$((USED + 1))
+
+          # 计算今天运行小时数（09:00 → 23:00 = 14 小时）
+          START=9
+          STOP=23
+          RUNTIME=$((STOP - START))
+
+          NEW=$((USED + RUNTIME))
+
           sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $NEW/" $FILE
 
       - name: Commit usage
