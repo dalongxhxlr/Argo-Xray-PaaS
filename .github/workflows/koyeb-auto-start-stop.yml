@@ -16,9 +16,10 @@ jobs:
         uses: actions/checkout@v4
 
       # 必须放在最前面，永远执行
-      - name: Install Koyeb CLI (GitHub mirror)
+      - name: Install Koyeb CLI (correct tar.gz)
         run: |
-          curl -L https://github.com/koyeb/koyeb-cli/releases/latest/download/koyeb-linux-amd64 -o koyeb
+          curl -L https://github.com/koyeb/koyeb-cli/releases/latest/download/koyeb-linux-amd64.tar.gz -o koyeb.tar.gz
+          tar -xzf koyeb.tar.gz
           chmod +x koyeb
           sudo mv koyeb /usr/local/bin/koyeb
           which koyeb
