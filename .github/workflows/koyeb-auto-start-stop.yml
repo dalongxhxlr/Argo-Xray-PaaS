@@ -2,8 +2,8 @@ name: koyeb-auto-start-stop
 
 on:
   schedule:
-    - cron: '0 1 * * *'
-    - cron: '0 15 * * *'
+    - cron: '0 1 * * *'   # 09:00 开（UTC 01:00）
+    - cron: '0 15 * * *'  # 23:00 关（UTC 15:00）
   workflow_dispatch:
 
 jobs:
@@ -14,16 +14,6 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      # 必须放在最前面，永远执行
-      - name: Install Koyeb CLI (correct tar.gz)
-        run: |
-          curl -L https://github.com/koyeb/koyeb-cli/releases/latest/download/koyeb-linux-amd64.tar.gz -o koyeb.tar.gz
-          tar -xzf koyeb.tar.gz
-          chmod +x koyeb
-          sudo mv koyeb /usr/local/bin/koyeb
-          which koyeb
-          koyeb --version
 
       - name: Decide action
         id: decide
@@ -74,37 +64,37 @@ jobs:
             exit 0
           fi
 
-      - name: Login Koyeb
-        if: steps.decide.outputs.action != 'none'
-        run: koyeb login --token "$KOYEB_TOKEN"
-        env:
-          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
-
-      - name: Start service (with retry)
+      # -------------------------
+      # API 版：启动服务
+      # -------------------------
+      - name: Start service via API
         if: steps.decide.outputs.action == 'start'
         env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          for i in 1 2 3; do
-            if koyeb service update "$KOYEB_SERVICE" --instances 1; then
-              exit 0
-            fi
-            sleep 5
-          done
-          exit 1
+          echo "Starting service via API..."
+          curl -X PATCH \
+            -H "Authorization: Bearer $KOYEB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"instances":1}' \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE"
 
-      - name: Stop service (with retry)
+      # -------------------------
+      # API 版：停止服务
+      # -------------------------
+      - name: Stop service via API
         if: steps.decide.outputs.action == 'stop'
         env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          for i in 1 2 3; do
-            if koyeb service update "$KOYEB_SERVICE" --instances 0; then
-              exit 0
-            fi
-            sleep 5
-          done
-          exit 1
+          echo "Stopping service via API..."
+          curl -X PATCH \
+            -H "Authorization: Bearer $KOYEB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"instances":0}' \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE"
 
       - name: Add 1 hour usage when stopped
         if: steps.decide.outputs.action == 'stop'
@@ -113,6 +103,7 @@ jobs:
           USED=$(sed -n 's/.*"usage_hours": \([0-9]*\).*/\1/p' $FILE)
           NEW=$((USED + 1))
           sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $NEW/" $FILE
+          echo "Updated usage: $USED → $NEW"
 
       - name: Commit updated JSON
         uses: stefanzweifel/git-auto-commit-action@v5
