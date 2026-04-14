@@ -17,9 +17,12 @@ jobs:
 
       # 必须放在最前面，永远执行
       - name: Install Koyeb CLI
+        shell: bash
         run: |
           curl -fsSL https://cli.koyeb.com/install.sh | sh
           echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.koyeb/bin:$PATH"
+          which koyeb || true
 
       - name: Decide action
         id: decide
