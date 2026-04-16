@@ -2,8 +2,9 @@ name: koyeb-worker-auto
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 09:00 CST 启动（UTC 01:00）
-    - cron: '0 15 * * *'  # 23:00 CST 停止（UTC 15:00）
+    - cron: '0 1 * * *'     # 09:00 CST 启动（UTC 01:00）
+    - cron: '0 15 * * *'    # 23:00 CST 停止（UTC 15:00）
+    - cron: '30 16 * * *'   # 00:30 CST 补偿任务（UTC 16:30）
   workflow_dispatch:
 
 jobs:
@@ -18,13 +19,27 @@ jobs:
         id: decide
         run: |
           HOUR=$(date -u +%H)
+          MIN=$(date -u +%M)
+
+          # 正常启动
           if [ "$HOUR" = "01" ]; then
             echo "action=start" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "15" ]; then
-            echo "action=stop" >> $GITHUB_OUTPUT
-          else
-            echo "action=none" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          # 正常停止
+          if [ "$HOUR" = "15" ]; then
+            echo "action=stop" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 补偿任务：如果昨天 23:00 没执行，则补一次
+          if [ "$HOUR" = "16" ] && [ "$MIN" = "30" ]; then
+            echo "action=compensate" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "action=none" >> $GITHUB_OUTPUT
 
       - name: Load usage
         id: usage
@@ -82,12 +97,11 @@ jobs:
             "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
 
       - name: Add usage hours
-        if: steps.decide.outputs.action == 'stop'
+        if: steps.decide.outputs.action == 'stop' || steps.decide.outputs.action == 'compensate'
         run: |
           FILE="platform_limits.json"
           USED=$(sed -n 's/.*"usage_hours": \([0-9]*\).*/\1/p' $FILE)
 
-          # 计算今天运行小时数（09:00 → 23:00 = 14 小时）
           START=9
           STOP=23
           RUNTIME=$((STOP - START))
@@ -97,6 +111,7 @@ jobs:
           sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $NEW/" $FILE
 
       - name: Commit usage
+        if: steps.decide.outputs.action == 'stop' || steps.decide.outputs.action == 'compensate'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Update usage hours"
