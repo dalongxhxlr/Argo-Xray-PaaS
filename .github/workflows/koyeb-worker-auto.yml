@@ -1,118 +1,43 @@
-name: koyeb-worker-auto
+name: koyeb-usage-sync
 
 on:
   schedule:
-    - cron: '0 1 * * *'     # 09:00 CST 启动（UTC 01:00）
-    - cron: '0 15 * * *'    # 23:00 CST 停止（UTC 15:00）
-    - cron: '30 16 * * *'   # 00:30 CST 补偿任务（UTC 16:30）
+    - cron: '0 2 * * *'   # 每天 10:00 CST 执行一次同步（UTC 02:00）
   workflow_dispatch:
 
 jobs:
-  control:
+  sync:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Decide action
-        id: decide
-        run: |
-          HOUR=$(date -u +%H)
-          MIN=$(date -u +%M)
-
-          # 正常启动
-          if [ "$HOUR" = "01" ]; then
-            echo "action=start" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # 正常停止
-          if [ "$HOUR" = "15" ]; then
-            echo "action=stop" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # 补偿任务：如果昨天 23:00 没执行，则补一次
-          if [ "$HOUR" = "16" ] && [ "$MIN" = "30" ]; then
-            echo "action=compensate" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "action=none" >> $GITHUB_OUTPUT
-
-      - name: Load usage
-        id: usage
-        run: |
-          FILE="platform_limits.json"
-          LIMIT=$(sed -n 's/.*"monthly_limit_hours": \([0-9]*\).*/\1/p' $FILE)
-          USED=$(sed -n 's/.*"usage_hours": \([0-9]*\).*/\1/p' $FILE)
-          YEAR=$(sed -n 's/.*"year": \([0-9]*\).*/\1/p' $FILE)
-          MONTH=$(sed -n 's/.*"month": \([0-9]*\).*/\1/p' $FILE)
-
-          NOW_YEAR=$(date +%Y)
-          NOW_MONTH=$(date +%m | sed 's/^0//')
-
-          if [ "$YEAR" != "$NOW_YEAR" ] || [ "$MONTH" != "$NOW_MONTH" ]; then
-            USED=0
-            YEAR=$NOW_YEAR
-            MONTH=$NOW_MONTH
-          fi
-
-          sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $USED/" $FILE
-          sed -i "s/\"year\": [0-9]*/\"year\": $YEAR/" $FILE
-          sed -i "s/\"month\": [0-9]*/\"month\": $MONTH/" $FILE
-
-          echo "limit=$LIMIT" >> $GITHUB_OUTPUT
-          echo "used=$USED" >> $GITHUB_OUTPUT
-
-      - name: Check limit
-        if: steps.decide.outputs.action == 'start'
-        run: |
-          LIMIT=${{ steps.usage.outputs.limit }}
-          USED=${{ steps.usage.outputs.used }}
-          if [ "$USED" -ge "$LIMIT" ]; then
-            echo "Monthly limit reached. Not starting."
-            exit 0
-          fi
-
-      - name: Start Worker
-        if: steps.decide.outputs.action == 'start'
+      - name: Fetch usage from Koyeb API
+        id: fetch
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          curl -X POST \
-            -H "Authorization: Bearer $KOYEB_TOKEN" \
-            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
-
-      - name: Stop Worker
-        if: steps.decide.outputs.action == 'stop'
-        env:
-          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
-          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
-        run: |
-          curl -X POST \
-            -H "Authorization: Bearer $KOYEB_TOKEN" \
-            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
-
-      - name: Add usage hours
-        if: steps.decide.outputs.action == 'stop' || steps.decide.outputs.action == 'compensate'
-        run: |
           FILE="platform_limits.json"
-          USED=$(sed -n 's/.*"usage_hours": \([0-9]*\).*/\1/p' $FILE)
 
-          START=9
-          STOP=23
-          RUNTIME=$((STOP - START))
+          # 调用 Koyeb API 获取服务信息
+          RESPONSE=$(curl -s -H "Authorization: Bearer $KOYEB_TOKEN" \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE")
 
-          NEW=$((USED + RUNTIME))
+          # 提取计费秒数（假设返回里有 billed_seconds 字段）
+          BILLED=$(echo $RESPONSE | jq '.service.billed_seconds')
 
-          sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $NEW/" $FILE
+          # 转换成小时
+          HOURS=$((BILLED / 3600))
 
-      - name: Commit usage
-        if: steps.decide.outputs.action == 'stop' || steps.decide.outputs.action == 'compensate'
+          # 更新 JSON
+          sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $HOURS/" $FILE
+
+          echo "hours=$HOURS" >> $GITHUB_OUTPUT
+
+      - name: Commit usage update
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Update usage hours"
+          commit_message: "Sync usage hours from Koyeb API"
           file_pattern: platform_limits.json
