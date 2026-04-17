@@ -3,7 +3,7 @@ name: koyeb-usage-sync
 on:
   schedule:
     - cron: '0 2 * * *'   # 每天 10:00 CST 执行一次同步（UTC 02:00）
-  workflow_dispatch:
+  workflow_dispatch:       # 支持手动运行
 
 jobs:
   sync:
@@ -13,28 +13,40 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Fetch usage from Koyeb API
-        id: fetch
+      - name: Calculate usage hours from timestamps
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
           FILE="platform_limits.json"
 
-          # 调用 Koyeb API 获取服务信息
           RESPONSE=$(curl -s -H "Authorization: Bearer $KOYEB_TOKEN" \
             "https://app.koyeb.com/v1/services/$KOYEB_SERVICE")
 
-          # 提取计费秒数（假设返回里有 billed_seconds 字段）
-          BILLED=$(echo $RESPONSE | jq '.service.billed_seconds')
+          STARTED=$(echo $RESPONSE | jq -r '.service.started_at')
+          PAUSED=$(echo $RESPONSE | jq -r '.service.paused_at')
+          TERMINATED=$(echo $RESPONSE | jq -r '.service.terminated_at')
 
-          # 转换成小时
-          HOURS=$((BILLED / 3600))
+          # 当前时间（UTC）
+          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # 更新 JSON
+          # 转换为秒
+          START_SEC=$(date -d "$STARTED" +%s)
+
+          if [ "$PAUSED" != "null" ]; then
+            END_SEC=$(date -d "$PAUSED" +%s)
+          elif [ "$TERMINATED" != "null" ]; then
+            END_SEC=$(date -d "$TERMINATED" +%s)
+          else
+            END_SEC=$(date -d "$NOW" +%s)
+          fi
+
+          USED_SEC=$((END_SEC - START_SEC))
+          HOURS=$((USED_SEC / 3600))
+
           sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $HOURS/" $FILE
 
-          echo "hours=$HOURS" >> $GITHUB_OUTPUT
+          echo "Calculated usage_hours=$HOURS"
 
       - name: Commit usage update
         uses: stefanzweifel/git-auto-commit-action@v5
