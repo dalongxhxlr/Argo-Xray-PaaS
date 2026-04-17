@@ -1,19 +1,82 @@
-name: koyeb-usage-sync
+name: koyeb-worker-auto
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 每天 10:00 CST 执行一次同步（UTC 02:00）
-  workflow_dispatch:       # 支持手动运行
+    - cron: '0 1 * * *'   # 09:00 CST 启动服务（UTC 01:00）
+    - cron: '0 15 * * *'  # 23:00 CST 停止服务（UTC 15:00）
+  workflow_dispatch:
 
 jobs:
-  sync:
+  control:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Calculate usage hours from timestamps
+      - name: Decide action
+        id: decide
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "01" ]; then
+            echo "action=start" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" = "15" ]; then
+            echo "action=stop" >> $GITHUB_OUTPUT
+          else
+            echo "action=sync" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load usage and limit
+        id: usage
+        run: |
+          FILE="platform_limits.json"
+          LIMIT=$(jq '.koyeb.monthly_limit_hours' $FILE)
+          USED=$(jq '.koyeb.usage_hours' $FILE)
+          YEAR=$(jq '.koyeb.year' $FILE)
+          MONTH=$(jq '.koyeb.month' $FILE)
+
+          NOW_YEAR=$(date +%Y)
+          NOW_MONTH=$(date +%-m)
+
+          # 月初自动重置
+          if [ "$YEAR" != "$NOW_YEAR" ] || [ "$MONTH" != "$NOW_MONTH" ]; then
+            echo "⚠️ 检测到新月份，自动重置 usage_hours=0"
+            jq ".koyeb.usage_hours = 0 | .koyeb.year = $NOW_YEAR | .koyeb.month = $NOW_MONTH | .koyeb.estimated_cost = 0" $FILE > tmp.json && mv tmp.json $FILE
+            USED=0
+          fi
+
+          echo "limit=$LIMIT" >> $GITHUB_OUTPUT
+          echo "used=$USED" >> $GITHUB_OUTPUT
+          echo "当前已用小时: $USED / 月度限额: $LIMIT"
+
+      - name: Start Worker
+        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used < steps.usage.outputs.limit
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+        run: |
+          echo "启动服务中..."
+          curl -X POST \
+            -H "Authorization: Bearer $KOYEB_TOKEN" \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
+
+      - name: Skip Start (limit reached)
+        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used >= steps.usage.outputs.limit
+        run: |
+          echo "⚠️ 已达到月度限额，不再启动服务。"
+
+      - name: Stop Worker
+        if: steps.decide.outputs.action == 'stop'
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+        run: |
+          echo "停止服务中..."
+          curl -X POST \
+            -H "Authorization: Bearer $KOYEB_TOKEN" \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
+
+      - name: Sync usage hours and cost from Koyeb API
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
@@ -27,10 +90,8 @@ jobs:
           PAUSED=$(echo $RESPONSE | jq -r '.service.paused_at')
           TERMINATED=$(echo $RESPONSE | jq -r '.service.terminated_at')
 
-          # 当前时间（UTC）
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # 转换为秒
           START_SEC=$(date -d "$STARTED" +%s)
 
           if [ "$PAUSED" != "null" ]; then
@@ -42,14 +103,22 @@ jobs:
           fi
 
           USED_SEC=$((END_SEC - START_SEC))
-          HOURS=$((USED_SEC / 3600))
+          HOURS=$(echo "scale=4; $USED_SEC/3600" | bc)   # 精确到小数
 
-          sed -i "s/\"usage_hours\": [0-9]*/\"usage_hours\": $HOURS/" $FILE
+          # 费用估算：按 $0.00216/h
+          COST=$(echo "scale=4; $HOURS*0.00216" | bc)
 
-          echo "Calculated usage_hours=$HOURS"
+          LIMIT=$(jq '.koyeb.monthly_limit_hours' $FILE)
+          REMAIN=$(echo "scale=4; $LIMIT - $HOURS" | bc)
+
+          jq ".koyeb.usage_hours = $HOURS | .koyeb.estimated_cost = $COST" $FILE > tmp.json && mv tmp.json $FILE
+
+          echo "✅ 已同步 usage_hours=$HOURS 小时"
+          echo "💰 预计费用: $COST USD"
+          echo "📊 剩余额度: $REMAIN 小时 (总限额: $LIMIT 小时)"
 
       - name: Commit usage update
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Sync usage hours from Koyeb API"
+          commit_message: "Sync usage hours and cost from Koyeb API"
           file_pattern: platform_limits.json
