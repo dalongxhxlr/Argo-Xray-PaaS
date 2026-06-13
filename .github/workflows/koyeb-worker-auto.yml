@@ -5,6 +5,11 @@ on:
     - cron: '0 1 * * *'   # 09:00 CST 启动服务（UTC 01:00）
     - cron: '0 15 * * *'  # 23:00 CST 停止服务（UTC 15:00）
   workflow_dispatch:
+    inputs:
+      manual_action:
+        description: '手动控制动作用'
+        required: false
+        default: 'sync'
 
 jobs:
   control:
@@ -17,16 +22,20 @@ jobs:
       - name: Decide action
         id: decide
         run: |
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" = "01" ]; then
-            echo "action=start" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "15" ]; then
-            echo "action=stop" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "action=${{ github.event.inputs.manual_action }}" >> $GITHUB_OUTPUT
           else
-            echo "action=sync" >> $GITHUB_OUTPUT
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" = "01" ]; then
+              echo "action=start" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "15" ]; then
+              echo "action=stop" >> $GITHUB_OUTPUT
+            else
+              echo "action=sync" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      - name: Load usage and limit
+      - name: Load and Check Limits
         id: usage
         run: |
           FILE="platform_limits.json"
@@ -38,16 +47,16 @@ jobs:
           NOW_YEAR=$(date +%Y)
           NOW_MONTH=$(date +%-m)
 
-          # 月初自动重置
+          # 月初自动重置所有记账指标
           if [ "$YEAR" != "$NOW_YEAR" ] || [ "$MONTH" != "$NOW_MONTH" ]; then
-            echo "⚠️ 检测到新月份，自动重置 usage_hours=0"
-            jq ".koyeb.usage_hours = 0 | .koyeb.year = $NOW_YEAR | .koyeb.month = $NOW_MONTH | .koyeb.estimated_cost = 0" $FILE > tmp.json && mv tmp.json $FILE
+            echo "⚠️ 检测到新月份，自动重置所有度量数据"
+            jq ".koyeb.usage_hours = 0 | .koyeb.year = $NOW_YEAR | .koyeb.month = $NOW_MONTH | .koyeb.estimated_cost = 0 | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
             USED=0
           fi
 
           echo "limit=$LIMIT" >> $GITHUB_OUTPUT
           echo "used=$USED" >> $GITHUB_OUTPUT
-          echo "当前已用小时: $USED / 月度限额: $LIMIT"
+          echo "📊 当前月度已累计使用: $USED / 限额保护阀值: $LIMIT 小时"
 
       - name: Start Worker
         if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used < steps.usage.outputs.limit
@@ -55,15 +64,18 @@ jobs:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          echo "启动服务中..."
-          curl -X POST \
-            -H "Authorization: Bearer $KOYEB_TOKEN" \
-            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
+          echo "🚀 额度安全，正在启动 Koyeb 代理实例..."
+          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
+          
+          # 在 JSON 中记录下本次启动的精确时间戳
+          FILE="platform_limits.json"
+          NOW_TS=$(date +%s)
+          jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
 
-      - name: Skip Start (limit reached)
+      - name: Skip Start (Limit Reached)
         if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used >= steps.usage.outputs.limit
         run: |
-          echo "⚠️ 已达到月度限额，不再启动服务。"
+          echo "🛑 [危险拦截] 已达到或超过月度设定的安全配额！为了防止信用卡被扣费，拒绝启动服务。"
 
       - name: Stop Worker
         if: steps.decide.outputs.action == 'stop'
@@ -71,54 +83,38 @@ jobs:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          echo "停止服务中..."
-          curl -X POST \
-            -H "Authorization: Bearer $KOYEB_TOKEN" \
-            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
-
-      - name: Sync usage hours and cost from Koyeb API
-        env:
-          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
-          KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
-        run: |
+          echo "⏸️ 正在暂停 Koyeb 实例以节约额度..."
+          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
+          
+          # 计算本次运行时间并执行「增量累加」
           FILE="platform_limits.json"
-
-          RESPONSE=$(curl -s -H "Authorization: Bearer $KOYEB_TOKEN" \
-            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE")
-
-          STARTED=$(echo $RESPONSE | jq -r '.service.started_at')
-          PAUSED=$(echo $RESPONSE | jq -r '.service.paused_at')
-          TERMINATED=$(echo $RESPONSE | jq -r '.service.terminated_at')
-
-          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          START_SEC=$(date -d "$STARTED" +%s)
-
-          if [ "$PAUSED" != "null" ]; then
-            END_SEC=$(date -d "$PAUSED" +%s)
-          elif [ "$TERMINATED" != "null" ]; then
-            END_SEC=$(date -d "$TERMINATED" +%s)
+          NOW_TS=$(date +%s)
+          START_TS=$(jq '.koyeb.last_start_time' $FILE)
+          
+          if [ "$START_TS" != "null" ] && [ "$START_TS" -gt 0 ]; then
+            # 计算本次运行的秒数并转化为小时 (保留4位小数)
+            ELAPSED_SEC=$((NOW_TS - START_TS))
+            ELAPSED_HOURS=$(echo "scale=4; $ELAPSED_SEC / 3600" | bc)
+            
+            # 读取历史旧额度并加总
+            OLD_HOURS=$(jq '.koyeb.usage_hours' $FILE)
+            NEW_HOURS=$(echo "scale=4; $OLD_HOURS + $ELAPSED_HOURS" | bc)
+            
+            # 重新估算本月累计产生费用
+            COST=$(echo "scale=4; $NEW_HOURS * 0.00216" | bc)
+            
+            # 更新写入文件，并清空本次启动时间戳
+            jq ".koyeb.usage_hours = $NEW_HOURS | .koyeb.estimated_cost = $COST | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
+            
+            echo "✅ 本次运行时长: $ELAPSED_HOURS 小时已成功累加。"
+            echo "💰 本月累计预估费用变更为: $COST USD"
           else
-            END_SEC=$(date -d "$NOW" +%s)
+            echo "⚠️ 未能找到配套的启动时间戳，跳过本次时长累加计算。"
           fi
 
-          USED_SEC=$((END_SEC - START_SEC))
-          HOURS=$(echo "scale=4; $USED_SEC/3600" | bc)   # 精确到小数
-
-          # 费用估算：按 $0.00216/h
-          COST=$(echo "scale=4; $HOURS*0.00216" | bc)
-
-          LIMIT=$(jq '.koyeb.monthly_limit_hours' $FILE)
-          REMAIN=$(echo "scale=4; $LIMIT - $HOURS" | bc)
-
-          jq ".koyeb.usage_hours = $HOURS | .koyeb.estimated_cost = $COST" $FILE > tmp.json && mv tmp.json $FILE
-
-          echo "✅ 已同步 usage_hours=$HOURS 小时"
-          echo "💰 预计费用: $COST USD"
-          echo "📊 剩余额度: $REMAIN 小时 (总限额: $LIMIT 小时)"
-
-      - name: Commit usage update
+      - name: Commit Updated Progress
+        if: steps.decide.outputs.action == 'start' || steps.decide.outputs.action == 'stop'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Sync usage hours and cost from Koyeb API"
+          commit_message: "自动化记账: 同步最新用时与限额状态 [Skip CI]"
           file_pattern: platform_limits.json
