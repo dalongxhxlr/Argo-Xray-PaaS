@@ -11,6 +11,10 @@ on:
         required: false
         default: 'sync'
 
+# 全局环境变量：提前强制使用 Node 24，消除 actions/checkout@v4 的弃用告警
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   control:
     runs-on: ubuntu-latest
