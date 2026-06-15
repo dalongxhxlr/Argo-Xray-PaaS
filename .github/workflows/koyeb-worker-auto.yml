@@ -19,7 +19,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-- name: Decide action
+      - name: Decide action
         id: decide
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -60,7 +60,7 @@ jobs:
           echo "used=$USED" >> $GITHUB_OUTPUT
           echo "📊 当前月度已累计使用: $USED / 限额保护阀值: $LIMIT 小时"
 
-- name: Start Worker
+      - name: Start Worker
         if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used < steps.usage.outputs.limit
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
