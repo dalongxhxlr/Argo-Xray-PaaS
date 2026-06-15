@@ -19,19 +19,21 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Decide action
+- name: Decide action
         id: decide
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "action=${{ github.event.inputs.manual_action }}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%H)
-            if [ "$HOUR" = "01" ]; then
+            # 使用 %-H 获取没有前导零的小时数（0-23），方便进行数值比较
+            HOUR=$(date -u +%-H)
+            
+            # 如果当前时间在 UTC 01:00 (北京09:00) 到 14:59 之间，目标状态应为 start
+            if [ "$HOUR" -ge 1 ] && [ "$HOUR" -lt 15 ]; then
               echo "action=start" >> $GITHUB_OUTPUT
-            elif [ "$HOUR" = "15" ]; then
-              echo "action=stop" >> $GITHUB_OUTPUT
             else
-              echo "action=sync" >> $GITHUB_OUTPUT
+              # 其他时间段，目标状态应为 stop
+              echo "action=stop" >> $GITHUB_OUTPUT
             fi
           fi
 
@@ -58,24 +60,25 @@ jobs:
           echo "used=$USED" >> $GITHUB_OUTPUT
           echo "📊 当前月度已累计使用: $USED / 限额保护阀值: $LIMIT 小时"
 
-      - name: Start Worker
+- name: Start Worker
         if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used < steps.usage.outputs.limit
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
         run: |
-          echo "🚀 额度安全，正在启动 Koyeb 代理实例..."
-          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
-          
-          # 在 JSON 中记录下本次启动的精确时间戳
           FILE="platform_limits.json"
-          NOW_TS=$(date +%s)
-          jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
-
-      - name: Skip Start (Limit Reached)
-        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used >= steps.usage.outputs.limit
-        run: |
-          echo "🛑 [危险拦截] 已达到或超过月度设定的安全配额！为了防止信用卡被扣费，拒绝启动服务。"
+          CURRENT_START=$(jq -r '.koyeb.last_start_time' $FILE)
+          
+          if [ "$CURRENT_START" != "null" ]; then
+            echo "⚠️ 服务已经在运行时间段内 (存在启动时间戳: $CURRENT_START)，跳过重复启动。"
+          else
+            echo "🚀 额度安全，正在启动 Koyeb 代理实例..."
+            curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
+            
+            # 在 JSON 中记录下本次启动的精确时间戳
+            NOW_TS=$(date +%s)
+            jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
+          fi
 
       - name: Stop Worker
         if: steps.decide.outputs.action == 'stop'
