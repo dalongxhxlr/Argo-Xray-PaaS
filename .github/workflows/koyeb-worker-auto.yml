@@ -1,5 +1,6 @@
 name: koyeb-worker-auto
 
+
 on:
   schedule:
     - cron: '0 1 * * *'   # 09:00 CST 启动服务（UTC 01:00）
