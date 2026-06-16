@@ -69,6 +69,7 @@ jobs:
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           FILE="platform_limits.json"
           CURRENT_START=$(jq -r '.koyeb.last_start_time' $FILE)
@@ -82,6 +83,24 @@ jobs:
             # 在 JSON 中记录下本次启动的精确时间戳
             NOW_TS=$(date +%s)
             jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
+            
+            # 发送 Discord 通知 (使用北京时间展示)
+            if [ -n "$DISCORD_WEBHOOK" ]; then
+              BEIJING_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+              MSG="🚀 **Koyeb 节点已启动**\n🕒 时间: $BEIJING_TIME\n📊 本月已用: ${{ steps.usage.outputs.used }} / ${{ steps.usage.outputs.limit }} 小时"
+              curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
+            fi
+          fi
+
+      - name: Skip Start (Limit Reached)
+        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used >= steps.usage.outputs.limit
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          echo "🛑 [危险拦截] 已达到或超过月度设定的安全配额！"
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+              MSG="🛑 **[安全熔断] Koyeb 节点启动被拦截！**\n⚠️ 本月额度已耗尽 (${{ steps.usage.outputs.used }} / ${{ steps.usage.outputs.limit }} 小时)，为防止扣费，已停止自动启动。"
+              curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
           fi
 
       - name: Stop Worker
@@ -89,6 +108,7 @@ jobs:
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           echo "⏸️ 正在暂停 Koyeb 实例以节约额度..."
           curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
@@ -115,6 +135,14 @@ jobs:
             
             echo "✅ 本次运行时长: $ELAPSED_HOURS 小时已成功累加。"
             echo "💰 本月累计预估费用变更为: $COST USD"
+            
+            # 发送 Discord 通知 (包含运行时长统计)
+            if [ -n "$DISCORD_WEBHOOK" ]; then
+              BEIJING_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+              MSG="⏸️ **Koyeb 节点已暂停**\n🕒 时间: $BEIJING_TIME\n⏳ 本次运行: $ELAPSED_HOURS 小时\n📈 本月累计: $NEW_HOURS / ${{ steps.usage.outputs.limit }} 小时\n💰 本月预估费用: \$$COST USD"
+              curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
+            fi
+            
           else
             echo "⚠️ 未能找到配套的启动时间戳，跳过本次时长累加计算。"
           fi
