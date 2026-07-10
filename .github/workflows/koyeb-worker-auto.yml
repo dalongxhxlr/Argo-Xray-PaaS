@@ -113,7 +113,8 @@ jobs:
             OLD_HOURS=$(jq '.koyeb.usage_hours' $FILE)
             NEW_HOURS=$(echo "scale=4; $OLD_HOURS + $ELAPSED_HOURS" | bc)
 
-            COST=$(echo "scale=4; $NEW_HOURS * 0.00216" | bc)
+            # 修正计费单价：0.0022 美元/小时（与 Koyeb 官方一致）
+            COST=$(echo "scale=4; $NEW_HOURS * 0.0022" | bc)
 
             jq ".koyeb.usage_hours = $NEW_HOURS | .koyeb.estimated_cost = $COST | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
 
