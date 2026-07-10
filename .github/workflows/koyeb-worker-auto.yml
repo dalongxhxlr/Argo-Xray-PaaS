@@ -11,7 +11,6 @@ on:
         required: false
         default: 'sync'
 
-# 全局环境变量：提前强制使用 Node 24，消除 actions/checkout@v4 的弃用告警
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -29,14 +28,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "action=${{ github.event.inputs.manual_action }}" >> $GITHUB_OUTPUT
           else
-            # 使用 %-H 获取没有前导零的小时数（0-23），方便进行数值比较
             HOUR=$(date -u +%-H)
-            
-            # 如果当前时间在 UTC 01:00 (北京09:00) 到 14:59 之间，目标状态应为 start
             if [ "$HOUR" -ge 1 ] && [ "$HOUR" -lt 15 ]; then
               echo "action=start" >> $GITHUB_OUTPUT
             else
-              # 其他时间段，目标状态应为 stop
               echo "action=stop" >> $GITHUB_OUTPUT
             fi
           fi
@@ -53,7 +48,6 @@ jobs:
           NOW_YEAR=$(date +%Y)
           NOW_MONTH=$(date +%-m)
 
-          # 月初自动重置所有记账指标
           if [ "$YEAR" != "$NOW_YEAR" ] || [ "$MONTH" != "$NOW_MONTH" ]; then
             echo "⚠️ 检测到新月份，自动重置所有度量数据"
             jq ".koyeb.usage_hours = 0 | .koyeb.year = $NOW_YEAR | .koyeb.month = $NOW_MONTH | .koyeb.estimated_cost = 0 | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
@@ -72,24 +66,18 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           FILE="platform_limits.json"
-          CURRENT_START=$(jq -r '.koyeb.last_start_time' $FILE)
-          
-          if [ "$CURRENT_START" != "null" ]; then
-            echo "⚠️ 服务已经在运行时间段内 (存在启动时间戳: $CURRENT_START)，跳过重复启动。"
-          else
-            echo "🚀 额度安全，正在启动 Koyeb 代理实例..."
-            curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
-            
-            # 在 JSON 中记录下本次启动的精确时间戳
-            NOW_TS=$(date +%s)
-            jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
-            
-            # 发送 Discord 通知 (使用北京时间展示)
-            if [ -n "$DISCORD_WEBHOOK" ]; then
-              BEIJING_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
-              MSG="🚀 **Koyeb 节点已启动**\n🕒 时间: $BEIJING_TIME\n📊 本月已用: ${{ steps.usage.outputs.used }} / ${{ steps.usage.outputs.limit }} 小时"
-              curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
-            fi
+          echo "🚀 额度安全，正在启动 Koyeb 代理实例..."
+          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
+
+          # 无论之前状态如何，直接写入本次启动时间戳，防止因残留时间戳导致服务无法启动
+          NOW_TS=$(date +%s)
+          jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
+
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            BEIJING_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+            MSG="🚀 **Koyeb 节点已启动**\n🕒 时间: $BEIJING_TIME\n📊 本月已用: ${{ steps.usage.outputs.used }} / ${{ steps.usage.outputs.limit }} 小时"
+            curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
           fi
 
       - name: Skip Start (Limit Reached)
@@ -111,40 +99,35 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           echo "⏸️ 正在暂停 Koyeb 实例以节约额度..."
-          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
-          
-          # 计算本次运行时间并执行「增量累加」
+          curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" \
+            "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/pause"
+
           FILE="platform_limits.json"
           NOW_TS=$(date +%s)
           START_TS=$(jq '.koyeb.last_start_time' $FILE)
-          
+
           if [ "$START_TS" != "null" ] && [ "$START_TS" -gt 0 ]; then
-            # 计算本次运行的秒数并转化为小时 (保留4位小数)
             ELAPSED_SEC=$((NOW_TS - START_TS))
             ELAPSED_HOURS=$(echo "scale=4; $ELAPSED_SEC / 3600" | bc)
-            
-            # 读取历史旧额度并加总
+
             OLD_HOURS=$(jq '.koyeb.usage_hours' $FILE)
             NEW_HOURS=$(echo "scale=4; $OLD_HOURS + $ELAPSED_HOURS" | bc)
-            
-            # 重新估算本月累计产生费用
+
             COST=$(echo "scale=4; $NEW_HOURS * 0.00216" | bc)
-            
-            # 更新写入文件，并清空本次启动时间戳
+
             jq ".koyeb.usage_hours = $NEW_HOURS | .koyeb.estimated_cost = $COST | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
-            
+
             echo "✅ 本次运行时长: $ELAPSED_HOURS 小时已成功累加。"
             echo "💰 本月累计预估费用变更为: $COST USD"
-            
-            # 发送 Discord 通知 (包含运行时长统计)
+
             if [ -n "$DISCORD_WEBHOOK" ]; then
               BEIJING_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
               MSG="⏸️ **Koyeb 节点已暂停**\n🕒 时间: $BEIJING_TIME\n⏳ 本次运行: $ELAPSED_HOURS 小时\n📈 本月累计: $NEW_HOURS / ${{ steps.usage.outputs.limit }} 小时\n💰 本月预估费用: \$$COST USD"
               curl -s -H "Content-Type: application/json" -d "{\"content\": \"$MSG\"}" "$DISCORD_WEBHOOK"
             fi
-            
           else
-            echo "⚠️ 未能找到配套的启动时间戳，跳过本次时长累加计算。"
+            echo "⚠️ 未找到有效启动时间戳，跳过本次时长累加，但仍强制重置 last_start_time 避免下次启动被拦截。"
+            jq ".koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
           fi
 
       - name: Commit Updated Progress
