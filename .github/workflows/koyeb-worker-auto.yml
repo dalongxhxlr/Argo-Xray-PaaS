@@ -54,12 +54,15 @@ jobs:
             USED=0
           fi
 
+          # 用 bc 进行安全的数值比较，避免 GitHub Actions 表达式字符串比较 bug
+          LIMIT_REACHED=$(echo "$USED >= $LIMIT" | bc -l)
           echo "limit=$LIMIT" >> $GITHUB_OUTPUT
           echo "used=$USED" >> $GITHUB_OUTPUT
+          echo "limit_reached=$LIMIT_REACHED" >> $GITHUB_OUTPUT
           echo "📊 当前月度已累计使用: $USED / 限额保护阀值: $LIMIT 小时"
 
       - name: Start Worker
-        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used < steps.usage.outputs.limit
+        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.limit_reached == '0'
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
           KOYEB_SERVICE: ${{ secrets.KOYEB_SERVICE }}
@@ -70,7 +73,6 @@ jobs:
           curl -X POST -H "Authorization: Bearer $KOYEB_TOKEN" \
             "https://app.koyeb.com/v1/services/$KOYEB_SERVICE/resume"
 
-          # 无论之前状态如何，直接写入本次启动时间戳，防止因残留时间戳导致服务无法启动
           NOW_TS=$(date +%s)
           jq ".koyeb.last_start_time = $NOW_TS" $FILE > tmp.json && mv tmp.json $FILE
 
@@ -81,7 +83,7 @@ jobs:
           fi
 
       - name: Skip Start (Limit Reached)
-        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.used >= steps.usage.outputs.limit
+        if: steps.decide.outputs.action == 'start' && steps.usage.outputs.limit_reached == '1'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
@@ -113,7 +115,6 @@ jobs:
             OLD_HOURS=$(jq '.koyeb.usage_hours' $FILE)
             NEW_HOURS=$(echo "scale=4; $OLD_HOURS + $ELAPSED_HOURS" | bc)
 
-            # 修正计费单价：0.0022 美元/小时（与 Koyeb 官方一致）
             COST=$(echo "scale=4; $NEW_HOURS * 0.0022" | bc)
 
             jq ".koyeb.usage_hours = $NEW_HOURS | .koyeb.estimated_cost = $COST | .koyeb.last_start_time = null" $FILE > tmp.json && mv tmp.json $FILE
