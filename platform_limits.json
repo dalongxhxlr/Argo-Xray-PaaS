@@ -1,10 +1,10 @@
 {
   "koyeb": {
     "monthly_limit_hours": 450,
-    "usage_hours": 74.1733,
+    "usage_hours": 86.8460,
     "year": 2026,
     "month": 8,
-    "estimated_cost": 0.1631,
-    "last_start_time": 1786157168
+    "estimated_cost": 0.1910,
+    "last_start_time": null
   }
 }
