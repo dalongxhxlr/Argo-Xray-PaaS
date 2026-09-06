@@ -61,3 +61,123 @@ Koyeb 的 API 状态响应存在延迟，直接抓取平台时间戳进行覆盖
 1. **避免手动干预**：请尽量**不要**在 Koyeb 网页控制台手动启动或停止实例。本套逻辑依赖 GitHub Actions 本地记录的 `last_start_time` 进行闭环计算。如果手动操作，会导致本地记录的时长与平台实际消耗脱节。
 2. **强制提交权限**：该脚本在运行结束后会自动将更新后的 `platform_limits.json` 提交回仓库。请确保你的 GitHub Actions 具有对仓库的写入权限（在仓库设置的 **Actions > General > Workflow permissions** 中勾选 `Read and write permissions`）。
 3. **时区问题**：GitHub Actions 的 cron 任务使用的是 UTC 时间，修改启停策略时请注意加上 8 小时的时差换算为北京时间。
+
+
+########################################################################################################################################
+
+因github工作流排队导致延时5小时启动，延时3小时停止。
+改用定时任务网站无服务定时任务启停koyeb服务，不再使用github工作流，但也没有超额判断停机功能。仅仅准时启停。
+
+# 使用 cron-job.org 定时控制 Koyeb 服务启停完全指南
+
+本指南详细记录了如何利用免费的定时任务服务 **cron-job.org**，通过调用 **Koyeb REST API** 自动定时暂停（Pause）与恢复（Resume）从 GitHub 部署在 Koyeb 上的服务。
+
+适用于希望在夜间或非工作时段关停 Koyeb 服务以节省额度或资源的场景。
+
+---
+
+## 目录
+1. [准备工作](#一准备工作)
+   - [1.1 生成 Koyeb API Token](#11-生成-koyeb-api-token)
+   - [1.2 获取 Koyeb Service ID](#12-获取-koyeb-service-id)
+2. [API 接口说明](#二api-接口说明)
+3. [在 cron-job.org 配置定时任务](#三在-cron-joborg-配置定时任务)
+   - [3.1 配置定时恢复/启动任务 (Resume)](#31-配置定时恢复启动任务-resume)
+   - [3.2 配置定时暂停/停止任务 (Pause)](#32-配置定时暂停停止任务-pause)
+4. [常见问题与踩坑排查](#四常见问题与踩坑排查)
+   - [4.1 401 Unauthorized 报错排查](#41-401-unauthorized-报错排查)
+   - [4.2 404 Not Found 报错排查](#42-404-not-found-报错排查)
+5. [安全建议](#五安全建议)
+
+---
+
+## 一、准备工作
+
+### 1.1 生成 Koyeb API Token
+1. 登录 [Koyeb 控制台](https://app.koyeb.com/)。
+2. 点击右上角个人头像，进入 **Settings**。
+3. 在左侧菜单中选择 **API Keys**，点击 **Create API Key**。此处复用github的已经使用的api key，不需新建。
+4. 输入描述名称（如 `cron-job-auth`），生成 API Key。
+5. **务必立即复制并保存该 API Token**（格式通常形如 `kyp_xxxxxxxx...`），生成后它将不再完整显示。
+
+### 1.2 获取 Koyeb Service ID
+1. 在 Koyeb 控制台中打开你通过 GitHub 部署的目标服务。
+2. 查看浏览器地址栏的 URL：
+   `https://app.koyeb.com/services/serv_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+3. 其中 `serv_` 开头的一串字符串即为你的 **Service ID**。
+
+---
+
+## 二、API 接口说明
+
+Koyeb 提供官方 REST API 来支持控制服务的状态：
+
+| 操作名称 | 请求方法 (HTTP Method) | 请求 URL |
+| :--- | :--- | :--- |
+| **恢复 / 启动服务** | `POST` | `https://app.koyeb.com/v1/services/<SERVICE_ID>/resume` |
+| **暂停 / 停止服务** | `POST` | `https://app.koyeb.com/v1/services/<SERVICE_ID>/pause` |
+
+**必需请求头 (Headers)：**
+- `Authorization`: `Bearer <YOUR_KOYEB_API_TOKEN>`
+- `Content-Type`: `application/json`
+
+---
+
+## 三、在 cron-job.org 配置定时任务
+
+注册并登录 [cron-job.org](https://cron-job.org/) 仪表盘。
+
+### 3.1 配置定时恢复/启动任务 (Resume)
+
+1. 点击 **Create Cronjob**。
+2. **Common Settings（基础设置）**：
+   - **Title**: `Start Koyeb Service`
+   - **URL**: `https://app.koyeb.com/v1/services/YOUR_SERVICE_ID/resume` *(请将 `YOUR_SERVICE_ID` 替换为实际 ID)*
+   - **Execution Schedule**: 根据需求设置定时启动时间（例如：每天 08:00）。
+3. **Advanced Settings（高级设置）**：
+   - **Request Method**: 选择 `POST`。
+   - **Request Headers**: 添加以下两个请求头：
+     - Header 1: Key = `Authorization` | Value = `Bearer YOUR_KOYEB_API_TOKEN` *(注意 `Bearer` 和 Token 之间有且仅有一个英文空格)*
+     - Header 2: Key = `Content-Type` | Value = `application/json`
+4. 点击 **Save** 保存配置。
+
+### 3.2 配置定时暂停/停止任务 (Pause)
+
+1. 再次点击 **Create Cronjob**。
+2. **Common Settings（基础设置）**：
+   - **Title**: `Stop Koyeb Service`
+   - **URL**: `https://app.koyeb.com/v1/services/YOUR_SERVICE_ID/pause` *(请将 `YOUR_SERVICE_ID` 替换为实际 ID)*
+   - **Execution Schedule**: 设置定时关停时间（例如：每天 23:00）。
+3. **Advanced Settings（高级设置）**：
+   - **Request Method**: 选择 `POST`。
+   - **Request Headers**: 填入与启动任务完全相同的 `Authorization` 和 `Content-Type` 请求头。
+4. 点击 **Save** 保存配置。
+
+---
+
+## 四、常见问题与踩坑排查
+
+### 4.1 401 Unauthorized 报错排查
+
+如果在测试运行（Test Run）时收到以下错误：
+> `401 Unauthorized: the endpoint requires authentication. Add the necessary credentials or an authorization header.`
+
+**排查方案：**
+1. **检查 `Bearer` 空格**：确认 `Authorization` 的值中，`Bearer` 与 Token 之间包含了单个英文空格。
+   - 错误例子：`Bearerkyp_xxx...` 或 `bearer kyp_xxx...`
+   - 正确例子：`Bearer kyp_xxx...`
+2. **误用 Basic Auth**：确保**没有**勾选 cron-job.org 界面上的 `Requires HTTP authentication`（Basic Authentication）选项。身份验证只需通过 Request Headers 传递。
+3. **Token 无效**：检查 API Token 是否被误删或过期，如有疑问可重新生成一个 Token。
+
+### 4.2 404 Not Found 报错排查
+
+**排查方案：**
+1. 检查 URL 中的 `SERVICE_ID` 是否拼写正确，必须包含 `serv_` 前缀。
+2. 检查请求 URL 结尾是否有误多加了斜杠或拼错 action 动词（必须是 `/pause` 或 `/resume`）。
+
+---
+
+## 五、安全建议
+
+1. **最小权限原则**：妥善保管 Koyeb API Token，避免泄露至公开的 GitHub 仓库或公开发布的脚本中。
+2. **通知监控**：可在 cron-job.org 的 Cronjob 设置中开启 **Execution failure notifications**（执行失败通知），当 API 调用异常或鉴权失效时及时接收邮件提醒。
